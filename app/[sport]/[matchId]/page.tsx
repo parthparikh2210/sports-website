@@ -101,10 +101,43 @@ export default async function MatchDetailPage({
     } catch {}
   }
 
+  if (sportSlug === 'tennis' && (!extra || isStale) && match.status !== 'upcoming') {
+    try {
+      const apiKey = process.env.TENNIS_API_KEY!
+      const res = await fetch(
+        `https://api.livetennisapi.com/api/public/v1/matches/${matchId}/score`,
+        { headers: { Authorization: `Bearer ${apiKey}` }, cache: 'no-store' }
+      )
+      const scoreJson = await res.json()
+
+      if (scoreJson && !scoreJson.error) {
+        extra = scoreJson
+        raw = { ...raw, score: scoreJson }
+        const homeScore = scoreJson.sets?.[0] ?? match.home_score
+        const awayScore = scoreJson.sets?.[1] ?? match.away_score
+        match.home_score = homeScore
+        match.away_score = awayScore
+
+        await supabase
+          .from('matches')
+          .update({
+            scorecard: extra,
+            raw_data: raw,
+            home_score: homeScore,
+            away_score: awayScore,
+            scorecard_updated_at: new Date().toISOString(),
+          })
+          .eq('external_id', matchId)
+      }
+    } catch {}
+  }
+
   const venueName = sportSlug === 'football' ? raw.fixture?.venue?.name : raw.venue
   const teamInfo =
     sportSlug === 'football'
       ? [raw.teams?.home, raw.teams?.away].filter(Boolean)
+      : sportSlug === 'tennis'
+      ? [raw.players?.p1, raw.players?.p2].filter(Boolean)
       : raw.teamInfo || []
 
   return (
@@ -147,7 +180,59 @@ export default async function MatchDetailPage({
             ))}
           </div>
         )}
+
+        {sportSlug === 'tennis' && match.status === 'live' && raw.score?.points && (
+          <p className="text-sm text-red-500 font-medium mt-2">
+            Current game: {raw.score.points[0]} - {raw.score.points[1]}
+            {raw.score.is_tiebreak ? ' (Tiebreak)' : ''}
+            {raw.score.server
+              ? ` — ${raw.score.server === 1 ? match.home_team_name : match.away_team_name} serving`
+              : ''}
+          </p>
+        )}
       </div>
+
+      {sportSlug === 'tennis' && (
+        <section className="mb-8">
+          <h2 className="font-semibold mb-3">Set by Set</h2>
+          {raw.score?.games?.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-400 border-b">
+                    <th className="py-1 pr-2"></th>
+                    {raw.score.games.map((_: any, i: number) => (
+                      <th key={i} className="py-1 px-2 text-right">
+                        Set {i + 1}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="border-b">
+                    <td className="py-1 pr-2 font-medium">{match.home_team_name}</td>
+                    {raw.score.games.map((g: any, i: number) => (
+                      <td key={i} className="py-1 px-2 text-right">
+                        {g[0]}
+                      </td>
+                    ))}
+                  </tr>
+                  <tr>
+                    <td className="py-1 pr-2 font-medium">{match.away_team_name}</td>
+                    {raw.score.games.map((g: any, i: number) => (
+                      <td key={i} className="py-1 px-2 text-right">
+                        {g[1]}
+                      </td>
+                    ))}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-sm text-gray-400">Set details not available yet.</p>
+          )}
+        </section>
+      )}
 
       {sportSlug === 'football' && Array.isArray(extra) && extra.length > 0 && (
         <section className="mb-8">
@@ -260,13 +345,17 @@ export default async function MatchDetailPage({
       )}
 
       {teamInfo.length > 0 && (
-        <div className="flex gap-6 mt-8">
-          {teamInfo.map((t: any) => (
-            <div key={t.name} className="flex items-center gap-2 text-sm text-gray-600">
+        <div className="flex gap-6 mt-8 flex-wrap">
+          {teamInfo.map((t: any, i: number) => (
+            <div key={t.name || i} className="flex items-center gap-2 text-sm text-gray-600">
               {(t.img || t.logo) && (
                 <img src={t.img || t.logo} alt={t.name} className="w-6 h-6 rounded-full" />
               )}
-              {t.name}
+              <span>
+                {t.name}
+                {t.country ? ` (${t.country})` : ''}
+                {t.ranking ? ` — Rank #${t.ranking}` : ''}
+              </span>
             </div>
           ))}
         </div>
