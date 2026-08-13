@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase'
 import { notFound } from 'next/navigation'
+import Link from 'next/link'
 import AutoRefresh from '@/components/AutoRefresh'
 
 export default async function SportPage({
@@ -31,8 +32,7 @@ export default async function SportPage({
 
   return (
     <main className="max-w-6xl mx-auto px-4 py-8">
-  <AutoRefresh />
-  <h1 className="text-2xl font-bold mb-6">{sport.name}</h1>
+      <AutoRefresh />
       <h1 className="text-2xl font-bold mb-6">{sport.name}</h1>
 
       {(!matches || matches.length === 0) ? (
@@ -51,7 +51,7 @@ export default async function SportPage({
               </h2>
               <div className="space-y-3">
                 {live.map((m) => (
-                  <MatchCard key={m.id} match={m} />
+                  <MatchCard key={m.id} match={m} sportSlug={slug} />
                 ))}
               </div>
             </section>
@@ -62,7 +62,7 @@ export default async function SportPage({
               <h2 className="text-lg font-semibold mb-3">Upcoming</h2>
               <div className="space-y-3">
                 {upcoming.map((m) => (
-                  <MatchCard key={m.id} match={m} />
+                  <MatchCard key={m.id} match={m} sportSlug={slug} />
                 ))}
               </div>
             </section>
@@ -73,7 +73,7 @@ export default async function SportPage({
               <h2 className="text-lg font-semibold mb-3">Finished</h2>
               <div className="space-y-3">
                 {finished.map((m) => (
-                  <MatchCard key={m.id} match={m} />
+                  <MatchCard key={m.id} match={m} sportSlug={slug} />
                 ))}
               </div>
             </section>
@@ -84,9 +84,12 @@ export default async function SportPage({
   )
 }
 
-function MatchCard({ match }: { match: any }) {
+function MatchCard({ match, sportSlug }: { match: any; sportSlug: string }) {
   return (
-    <div className="border rounded-lg p-4">
+    <Link
+      href={`/${sportSlug}/${match.external_id}`}
+      className="block border rounded-lg p-4 hover:bg-gray-50 transition-colors"
+    >
       <p className="text-xs text-gray-400 mb-1">{match.tournament_name}</p>
       <div className="flex justify-between items-center">
         <span className="font-medium">
@@ -97,6 +100,6 @@ function MatchCard({ match }: { match: any }) {
         </span>
       </div>
       {match.match_info && <p className="text-sm text-gray-500 mt-1">{match.match_info}</p>}
-    </div>
+    </Link>
   )
 }
