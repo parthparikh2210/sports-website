@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase'
 import { notFound } from 'next/navigation'
+import AutoRefresh from '@/components/AutoRefresh'
 
 export default async function SportPage({
   params,
@@ -30,6 +31,8 @@ export default async function SportPage({
 
   return (
     <main className="max-w-6xl mx-auto px-4 py-8">
+  <AutoRefresh />
+  <h1 className="text-2xl font-bold mb-6">{sport.name}</h1>
       <h1 className="text-2xl font-bold mb-6">{sport.name}</h1>
 
       {(!matches || matches.length === 0) ? (
