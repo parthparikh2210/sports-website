@@ -132,9 +132,83 @@ export default async function MatchDetailPage({
     } catch {}
   }
 
+  if (sportSlug === 'baseball' && (!extra || isStale) && match.status !== 'upcoming') {
+    try {
+      const apiKey = process.env.API_SPORTS_KEY!
+      const res = await fetch(`https://v1.baseball.api-sports.io/games?id=${matchId}`, {
+        headers: { 'x-apisports-key': apiKey },
+        cache: 'no-store',
+      })
+      const json = await res.json()
+      const freshGame = json.response?.[0]
+
+      if (freshGame) {
+        raw = freshGame
+        extra = freshGame.scores
+        match.home_score = freshGame.scores?.home?.total ?? match.home_score
+        match.away_score = freshGame.scores?.away?.total ?? match.away_score
+        match.match_info = freshGame.status?.long
+
+        const shortStatus = freshGame.status?.short
+        match.status = shortStatus?.startsWith('IN') ? 'live' : shortStatus === 'NS' ? 'upcoming' : 'finished'
+
+        await supabase
+          .from('matches')
+          .update({
+            raw_data: raw,
+            scorecard: extra,
+            home_score: match.home_score,
+            away_score: match.away_score,
+            match_info: match.match_info,
+            status: match.status,
+            scorecard_updated_at: new Date().toISOString(),
+          })
+          .eq('external_id', matchId)
+      }
+    } catch {}
+  }
+
+  // MLB-only: pull real batting/pitching stats from the free official MLB Stats API,
+  // matched to this game by date + team name (API-Baseball has no player-stats endpoint).
+  let mlbBoxscore: any = null
+  if (sportSlug === 'baseball' && match.tournament_name === 'MLB' && match.start_time) {
+    try {
+      const dateStr = new Date(match.start_time).toISOString().slice(0, 10)
+      const scheduleRes = await fetch(
+        `https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${dateStr}`,
+        { cache: 'no-store' }
+      )
+      const scheduleJson = await scheduleRes.json()
+      const games = scheduleJson.dates?.[0]?.games || []
+
+      const normalize = (s: string) => (s || '').toLowerCase().trim()
+      const lastWord = (s: string) => normalize(s).split(' ').pop()
+      const sameTeam = (mlbName: string, ourName: string) => {
+        const a = normalize(mlbName)
+        const b = normalize(ourName)
+        if (!a || !b) return false
+        return a === b || a.includes(b) || b.includes(a) || lastWord(mlbName) === lastWord(ourName)
+      }
+
+      const gameMatch = games.find(
+        (g: any) =>
+          sameTeam(g.teams?.home?.team?.name, match.home_team_name) &&
+          sameTeam(g.teams?.away?.team?.name, match.away_team_name)
+      )
+
+      if (gameMatch?.gamePk) {
+        const boxRes = await fetch(
+          `https://statsapi.mlb.com/api/v1/game/${gameMatch.gamePk}/boxscore`,
+          { cache: 'no-store' }
+        )
+        mlbBoxscore = await boxRes.json()
+      }
+    } catch {}
+  }
+
   const venueName = sportSlug === 'football' ? raw.fixture?.venue?.name : raw.venue
   const teamInfo =
-    sportSlug === 'football'
+    sportSlug === 'football' || sportSlug === 'baseball'
       ? [raw.teams?.home, raw.teams?.away].filter(Boolean)
       : sportSlug === 'tennis'
       ? [raw.players?.p1, raw.players?.p2].filter(Boolean)
@@ -191,6 +265,143 @@ export default async function MatchDetailPage({
           </p>
         )}
       </div>
+
+      {sportSlug === 'baseball' && raw.scores && (
+        <section className="mb-8">
+          <h2 className="font-semibold mb-3">Box Score</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-gray-400 border-b">
+                  <th className="py-1 pr-2">Team</th>
+                  {Object.keys(raw.scores.home?.innings || {})
+                    .filter((k) => k !== 'extra')
+                    .map((inn) => (
+                      <th key={inn} className="py-1 px-2 text-right">
+                        {inn}
+                      </th>
+                    ))}
+                  <th className="py-1 px-2 text-right font-semibold">R</th>
+                  <th className="py-1 px-2 text-right">H</th>
+                  <th className="py-1 pl-2 text-right">E</th>
+                </tr>
+              </thead>
+              <tbody>
+                {['away', 'home'].map((side) => (
+                  <tr key={side} className="border-b last:border-0">
+                    <td className="py-1 pr-2">
+                      {side === 'away' ? match.away_team_name : match.home_team_name}
+                    </td>
+                    {Object.keys(raw.scores.home?.innings || {})
+                      .filter((k) => k !== 'extra')
+                      .map((inn) => (
+                        <td key={inn} className="py-1 px-2 text-right">
+                          {raw.scores[side]?.innings?.[inn] ?? '-'}
+                        </td>
+                      ))}
+                    <td className="py-1 px-2 text-right font-semibold">{raw.scores[side]?.total ?? '-'}</td>
+                    <td className="py-1 px-2 text-right">{raw.scores[side]?.hits ?? '-'}</td>
+                    <td className="py-1 pl-2 text-right">{raw.scores[side]?.errors ?? '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {sportSlug === 'baseball' && mlbBoxscore?.teams && (
+        <div className="space-y-8 mb-8">
+          <h2 className="font-semibold -mb-4">Player Stats</h2>
+          {['away', 'home'].map((side) => {
+            const team = mlbBoxscore.teams[side]
+            const teamLabel = side === 'away' ? match.away_team_name : match.home_team_name
+            const batterIds: number[] = team?.batters || []
+            const pitcherIds: number[] = team?.pitchers || []
+
+            return (
+              <section key={side}>
+                <h3 className="font-medium mb-3 text-gray-700">{teamLabel}</h3>
+
+                {batterIds.length > 0 ? (
+                  <div className="mb-4 overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-left text-gray-400 border-b">
+                          <th className="py-1 pr-2">Batter</th>
+                          <th className="py-1 px-2 text-right">AB</th>
+                          <th className="py-1 px-2 text-right">R</th>
+                          <th className="py-1 px-2 text-right">H</th>
+                          <th className="py-1 px-2 text-right">RBI</th>
+                          <th className="py-1 px-2 text-right">BB</th>
+                          <th className="py-1 pl-2 text-right">SO</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {batterIds.map((id) => {
+                          const p = team.players?.[`ID${id}`]
+                          const b = p?.stats?.batting || {}
+                          return (
+                            <tr key={id} className="border-b last:border-0">
+                              <td className="py-1 pr-2">
+                                <div>{p?.person?.fullName}</div>
+                                <div className="text-xs text-gray-400">{p?.position?.abbreviation}</div>
+                              </td>
+                              <td className="py-1 px-2 text-right">{b.atBats ?? 0}</td>
+                              <td className="py-1 px-2 text-right">{b.runs ?? 0}</td>
+                              <td className="py-1 px-2 text-right font-medium">{b.hits ?? 0}</td>
+                              <td className="py-1 px-2 text-right">{b.rbi ?? 0}</td>
+                              <td className="py-1 px-2 text-right">{b.baseOnBalls ?? 0}</td>
+                              <td className="py-1 pl-2 text-right">{b.strikeOuts ?? 0}</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-400 mb-4">Lineup not posted yet.</p>
+                )}
+
+                {pitcherIds.length > 0 && (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-left text-gray-400 border-b">
+                          <th className="py-1 pr-2">Pitcher</th>
+                          <th className="py-1 px-2 text-right">IP</th>
+                          <th className="py-1 px-2 text-right">H</th>
+                          <th className="py-1 px-2 text-right">R</th>
+                          <th className="py-1 px-2 text-right">ER</th>
+                          <th className="py-1 px-2 text-right">BB</th>
+                          <th className="py-1 pl-2 text-right">SO</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pitcherIds.map((id) => {
+                          const p = team.players?.[`ID${id}`]
+                          const pitch = p?.stats?.pitching || {}
+                          return (
+                            <tr key={id} className="border-b last:border-0">
+                              <td className="py-1 pr-2">{p?.person?.fullName}</td>
+                              <td className="py-1 px-2 text-right">{pitch.inningsPitched ?? '0.0'}</td>
+                              <td className="py-1 px-2 text-right">{pitch.hits ?? 0}</td>
+                              <td className="py-1 px-2 text-right">{pitch.runs ?? 0}</td>
+                              <td className="py-1 px-2 text-right">{pitch.earnedRuns ?? 0}</td>
+                              <td className="py-1 px-2 text-right">{pitch.baseOnBalls ?? 0}</td>
+                              <td className="py-1 pl-2 text-right font-medium">{pitch.strikeOuts ?? 0}</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+            )
+          })}
+        </div>
+      )}
 
       {sportSlug === 'tennis' && (
         <section className="mb-8">
